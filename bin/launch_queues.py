@@ -19,7 +19,8 @@ def check_pid(pid):
 
 
 def run(pipeline, runtime):
-    config = json.load(open(pipeline, 'r'))
+    with open(pipeline, 'r')as f:
+        config = json.load(f)
 
     pids = {}
     for module in config.keys():

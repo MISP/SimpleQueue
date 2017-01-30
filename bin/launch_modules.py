@@ -19,7 +19,8 @@ def check_pid(pid):
 
 
 def run(startup, runtime):
-    config = json.load(open(startup, 'r'))
+    with open(startup, 'r') as f:
+        config = json.load(f)
     pids = {}
     for module in config.keys():
         nb_processes = config[module].get('processes')
