@@ -11,7 +11,7 @@ setup(
     url='https://github.com/MISP/SimpleQueue',
     description='Multiprocessed queuing system.',
     packages=['simplequeue'],
-    scripts=['bin/launch_queues.py', 'bin/launch_modules.py', 'bin/QueueIn.py', 'bin/QueueOut.py'],
+    scripts=['bin/managment.py', 'bin/QueueIn.py', 'bin/QueueOut.py'],
     classifiers=[
         'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
         'Development Status :: 3 - Alpha',

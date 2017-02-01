@@ -27,7 +27,7 @@ class PubSub(object):
 
     def subscribe(self):
         for msg in self.subscriber.listen():
-            if msg.get('data', None) is not None:
+            if msg.get('data'):
                 yield msg['data']
 
     def setup_publish(self, queue_name, queue_config):
