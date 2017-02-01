@@ -5,6 +5,11 @@ import json
 import subprocess
 import shlex
 import argparse
+import texttable
+import os
+import redis
+import time
+
 
 class Manager():
 
@@ -20,6 +25,9 @@ class Manager():
             self.startup = json.load(f)
         self.queues = {}
         self.modules = {}
+        self.default_redis = redis.StrictRedis(host=self.runtime['Default']['host'],
+                                               port=self.runtime['Default']['port'],
+                                               db=self.runtime['Default']['db'])
 
     def _is_pid_running(self, pid):
         if pid is None or pid.poll() is not None:
@@ -85,6 +93,18 @@ class Manager():
             [p.kill() for p in ps if p]
         self.modules = {}
 
+    def show_status(self):
+        table = texttable.Texttable()
+        table.header(["Queue name", "#Items"])
+        row = []
+        for name, size in self.default_redis.hgetall("queues").items():
+            row.append((name.decode(), size))
+        row.sort()
+        table.add_rows(row, header=False)
+        os.system('clear')
+        print(table.draw())
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Start and manage all queues.')
     parser.add_argument("-p", "--pipeline", type=str, required=True, help="Path to the pipeline configuration file.")
@@ -98,6 +118,12 @@ if __name__ == '__main__':
         while m.modules or m.queues:
             m.update_running_queues()
             m.update_running_modules()
+            m.show_status()
+            time.sleep(1)
     except KeyboardInterrupt:
+        m.stop_queues()
+        m.stop_modules()
+    except Exception as e:
+        print(e)
         m.stop_queues()
         m.stop_modules()

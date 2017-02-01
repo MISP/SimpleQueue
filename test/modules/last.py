@@ -16,21 +16,19 @@ if __name__ == '__main__':
 
     with open(args.runtime, 'r') as f:
         runtime = json.load(f)
-    pipeline = Pipeline(runtime['Default'], module_name)
-
-    print("{}: started to receive ({}) & publish ({}).".format(module_name, pipeline.in_set, pipeline.out_set))
+    pipeline = Pipeline(runtime, module_name)
 
     nb = 0
 
     while True:
         message = pipeline.receive()
         if message is not None:
-            # print(module_name + ': Got a message')  # Debug
+            pipeline.log.debug(module_name + ': Got a message')
             pipeline.send(message)
             nb += 1
             if nb % 100 == 0:
-                print('{} ({}): {} messages processed, {} to go.'.format(
-                    module_name, module_id, nb, pipeline.count_queued_messages()))  # info
+                pipeline.log.info('{} ({}): {} messages processed, {} to go.'.format(
+                    module_name, module_id, nb, pipeline.count_queued_messages()))
         else:
-            # print(module_name + ": Empty Queues: Waiting...")  # Debug
+            pipeline.log.debug(module_name + ": Empty Queues: Waiting...")
             pipeline.sleep(1)

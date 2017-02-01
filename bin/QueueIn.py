@@ -14,7 +14,6 @@ def signal_term_handler(signal, frame):
 
 def run(pipeline, module, runtime):
     p = Process(pipeline, module, runtime)
-    print('Entry queue for {} started. Receive on {}, populate to {}.'.format(module, p.source, p.in_set))
     p.populate_set_in()
 
 

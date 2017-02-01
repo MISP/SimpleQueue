@@ -15,11 +15,7 @@ def signal_term_handler(signal, frame):
 def run(pipeline, module, runtime):
     p = Process(pipeline, module, runtime)
     if p.destinations:
-        print('Output queue for {} started. Receive on {}, populate to {}.'.format(module, p.out_set, ', '.join(p.destinations)))
         p.publish()
-    else:
-        # No Publisher
-        print('Queue {} has no output, quitting.'.format(module))
 
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_term_handler)
