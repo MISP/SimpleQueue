@@ -20,5 +20,5 @@ setup(
         'Intended Audience :: Information Technology',
         'Programming Language :: Python :: 3',
     ],
-    install_requires=['redis']
+    install_requires=['redis', 'texttable']
 )
