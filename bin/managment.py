@@ -5,10 +5,15 @@ import json
 import subprocess
 import shlex
 import argparse
-import texttable
 import os
 import redis
 import time
+
+try:
+    from terminaltables import AsciiTable
+    HAS_TAB = True
+except:
+    HAS_TAB = False
 
 
 class Manager():
@@ -95,27 +100,38 @@ class Manager():
             [p.kill() for p in ps if p]
         self.modules = {}
 
-    def show_status(self):
-        modules_sizes = texttable.Texttable()
-        modules_sizes.header(["Queue name", "#Items"])
-        rows = []
-        for name, size in self.default_redis.hgetall("queues").items():
-            rows.append((name, size))
-        rows.sort()
-        modules_sizes.add_rows(rows, header=False)
-        modules_status = texttable.Texttable()
-        modules_status.header(["Queue name", "Process ID", 'Last pop', 'Last push'])
-        rows = []
+    def update_status(self):
+        status = {}
         for m in self.default_redis.smembers('modules'):
+            status[m] = {}
             for p in self.default_redis.smembers('module_{}'.format(m)):
                 details = self.default_redis.hgetall('module_{}_{}'.format(m, p))
-                rows.append([m, p, details['in'], details['out']])
-        rows.sort()
-        modules_status.add_rows(rows, header=False)
+                status[m][p] = {'last_pop': details['in'], 'size_in': details['size_in'],
+                                'last_push': details['out'], 'size_out': details['size_out'],
+                                'delayed': self.default_redis.zcard('{}in_delayed'.format(m))}
+        self.default_redis.set('status', json.dumps(status), ex=600)
 
+    def show_status(self):
+        if not HAS_TAB:
+            os.system('clear')
+            print('terminaltables no installed, running headless.')
+            return
+        if not self.default_redis.exists('status'):
+            os.system('clear')
+            print('No status key available, nothing to display.')
+            return
+        status = json.loads(self.default_redis.get('status'))
+
+        table = [["Queue name", "Delayed", "Process ID", 'Last pop', 'Input Size', 'Last push', 'Output Size']]
+        rows = []
+        for m, d in status.items():
+            for p, values in d.items():
+                rows.append([m, values['delayed'], p, values['last_pop'], values['size_in'], values['last_push'], values['size_out']])
+        rows.sort()
+        table += rows
+        table = AsciiTable(table)
         os.system('clear')
-        print(modules_sizes.draw())
-        print(modules_status.draw())
+        print(table.table)
 
     def cleanup_mgmt(self):
         pipe = self.default_redis.pipeline(False)
@@ -124,7 +140,6 @@ class Manager():
                 pipe.delete('module_{}_{}'.format(m, p))
             pipe.delete('module_{}'.format(m))
         pipe.delete('modules')
-        pipe.delete('queues')
         pipe.execute()
 
 if __name__ == '__main__':
@@ -132,6 +147,7 @@ if __name__ == '__main__':
     parser.add_argument("-p", "--pipeline", type=str, required=True, help="Path to the pipeline configuration file.")
     parser.add_argument("-r", "--runtime", type=str, required=True, help="Path to the runtime configuration file.")
     parser.add_argument("-s", "--startup", type=str, required=True, help="Path to the startup configuration file.")
+    parser.add_argument("-q", "--quiet", default=False, action='store_true', help="Run in quiet mode, no display.")
     args = parser.parse_args()
     m = Manager(args.pipeline, args.runtime, args.startup)
     m.launch_queues()
@@ -140,12 +156,14 @@ if __name__ == '__main__':
         while m.modules or m.queues:
             m.update_running_queues()
             m.update_running_modules()
-            m.show_status()
+            m.update_status()
+            if not args.quiet or not HAS_TAB:
+                m.show_status()
             time.sleep(1)
     except KeyboardInterrupt:
         m.stop_queues()
         m.stop_modules()
-    except Exception as e:
-        print(e)
-        m.stop_queues()
-        m.stop_modules()
+    # except Exception as e:
+    #    print(e)
+    #    m.stop_queues()
+    #    m.stop_modules()

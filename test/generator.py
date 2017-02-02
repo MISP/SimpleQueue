@@ -4,6 +4,7 @@
 import redis
 import time
 import json
+import random
 
 nb = 0
 
@@ -20,7 +21,7 @@ r = redis.StrictRedis(host=runtime['Default']['host'],
 
 while True:
     message = time.time()
-    r.publish(pipeline['Entry']['source-queue'], message)
+    r.publish(pipeline['Entry']['source-queue'], json.dumps({'run_at': message + random.randint(0, 20), 'content': message}))
     nb += 1
     if nb % 1000 == 0:
         print(nb)

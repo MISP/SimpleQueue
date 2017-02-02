@@ -29,7 +29,8 @@ class ModuleConnector(object):
         self.log.info('New {} for {} started.'.format(self.__class__.__name__, self.module_name))
         self.r.sadd('modules', self.module_name)
         self.r.sadd('module_{}'.format(self.module_name), os.getpid())
-        self.r.hmset('module_{}_{}'.format(self.module_name, os.getpid()), {'in': 0, 'out': 0})
+        self.r.hmset('module_{}_{}'.format(self.module_name, os.getpid()),
+                     {'in': 0, 'out': 0, 'size_in': 0, 'size_out': 0})
 
     def sleep(self, interval):
         """Requests the pipeline to sleep for the given interval"""
@@ -37,19 +38,17 @@ class ModuleConnector(object):
 
     def send(self, msg):
         '''Push a messages to the temporary exit queue (multiprocess)'''
-        self.r.hset('module_{}_{}'.format(self.module_name, os.getpid()), 'out', datetime.now().isoformat())
         self.r.sadd(self.out_set, msg)
+        self.r.hmset('module_{}_{}'.format(self.module_name, os.getpid()),
+                     {'out': datetime.now().isoformat(), 'size_out': self.r.scard(self.out_set)})
 
     def receive(self):
         '''Pop a messages from the temporary queue (multiprocess)'''
         # Update the size of the current waiting queue (for information purposes)
-        self.r.hset('queues', self.module_name, self.count_queued_messages())
-        self.r.hset('module_{}_{}'.format(self.module_name, os.getpid()), 'in', datetime.now().isoformat())
+        self.r.hmset('module_{}_{}'.format(self.module_name, os.getpid()),
+                     {'in': datetime.now().isoformat(), 'size_in': self.r.scard(self.in_set),
+                      'size_out': self.r.scard(self.out_set)})
         return self.r.spop(self.in_set)
-
-    def count_queued_messages(self):
-        '''Return the size of the current queue'''
-        return self.r.scard(self.in_set)
 
 
 class QueueManager(object):
@@ -68,9 +67,11 @@ class QueueManager(object):
             self.subscriber.psubscribe(queue_name)
 
         def subscribe(self):
-            for msg in self.subscriber.listen():
-                if msg.get('data'):
-                    yield msg['data']
+            msg = self.subscriber.get_message()
+            if not msg:
+                return None
+            if msg.get('data'):
+                return json.loads(msg['data'].decode())
 
         def setup_publish(self, queue_name, queue_config):
             r = redis.StrictRedis(host=queue_config['host'],
@@ -101,6 +102,14 @@ class QueueManager(object):
         self.destinations = self.modules[self.module_name].get('destination-queues')
         self.log.info('Queue for {} initialized.'.format(self.module_name))
 
+    def check_delayed(self):
+        now = int(time.time())
+        for value in self.r_temp.zrange('{}_delayed'.format(self.in_set), 0, now):
+            if value:
+                msg = json.loads(value.decode())
+                self.r_temp.sadd(self.in_set, msg['content'])
+        self.r_temp.zremrangebyscore('{}_delayed'.format(self.in_set), 0, now)
+
     def populate_set_in(self):
         '''Push all the messages addressed to the queue in a temporary redis set (mono process)'''
         queue_config = self.runtime.get(self.source)
@@ -108,10 +117,15 @@ class QueueManager(object):
             queue_config = self.runtime['Default']
         self.pubsub.setup_subscribe(self.source, queue_config)
         self.log.info('{} subscribing to input queue: {}.'.format(self.module_name, self.source))
-        for msg in self.pubsub.subscribe():
-            # self.log.debug('{} received a message.'.format(self.module_name))
-            self.r_temp.sadd(self.in_set, msg)
-            self.r_temp.hset('queues', self.module_name, int(self.r_temp.scard(self.in_set)))
+        while True:
+            msg = self.pubsub.subscribe()
+            if msg:
+                if not msg.get('run_at'):
+                    self.r_temp.sadd(self.in_set, msg['content'])
+                else:
+                    self.r_temp.zadd('{}_delayed'.format(self.in_set), msg.get('run_at'), json.dumps(msg))
+            self.check_delayed()
+            time.sleep(0.001)
 
     def publish(self):
         '''Push all the messages processed by the module to the next queue (mono process)'''

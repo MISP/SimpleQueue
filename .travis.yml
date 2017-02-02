@@ -13,6 +13,7 @@ services:
     - redis-server
 
 install:
+    - pip install terminaltables
     - pip install .
 
 script:
