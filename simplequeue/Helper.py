@@ -11,49 +11,25 @@ import redis
 import time
 import json
 import os
+from datetime import datetime
 
 from .logging import Log
 
-class PubSub(object):
 
-    def __init__(self):
-        self.subscriber = None
-        self.publishers = []
-
-    def setup_subscribe(self, queue_name, queue_config):
-        r = redis.StrictRedis(host=queue_config['host'],
-                              port=queue_config['port'],
-                              db=queue_config['db'])
-        self.subscriber = r.pubsub(ignore_subscribe_messages=True)
-        self.subscriber.psubscribe(queue_name)
-
-    def subscribe(self):
-        for msg in self.subscriber.listen():
-            if msg.get('data'):
-                yield msg['data']
-
-    def setup_publish(self, queue_name, queue_config):
-        r = redis.StrictRedis(host=queue_config['host'],
-                              port=queue_config['port'],
-                              db=queue_config['db'])
-        self.publishers.append((r, queue_name))
-
-    def publish(self, message):
-        for p, queue_name in self.publishers:
-            p.publish(queue_name, message)
-
-
-class Pipeline(object):
+class ModuleConnector(object):
 
     def __init__(self, runtime, module_name):
         self.log = Log(runtime, module_name, os.getpid())
-        self.r_temp = redis.StrictRedis(host=runtime['Default']['host'],
-                                        port=runtime['Default']['port'],
-                                        db=runtime['Default']['db'])
+        self.r = redis.StrictRedis(host=runtime['Default']['host'],
+                                   port=runtime['Default']['port'],
+                                   db=runtime['Default']['db'])
         self.module_name = module_name
         self.in_set = self.module_name + 'in'
         self.out_set = self.module_name + 'out'
-        self.log.info('New {} Pipeline started ({}).'.format(self.module_name, os.getpid()))
+        self.log.info('New {} for {} started.'.format(self.__class__.__name__, self.module_name))
+        self.r.sadd('modules', self.module_name)
+        self.r.sadd('module_{}'.format(self.module_name), os.getpid())
+        self.r.hmset('module_{}_{}'.format(self.module_name, os.getpid()), {'in': 0, 'out': 0})
 
     def sleep(self, interval):
         """Requests the pipeline to sleep for the given interval"""
@@ -61,20 +37,50 @@ class Pipeline(object):
 
     def send(self, msg):
         '''Push a messages to the temporary exit queue (multiprocess)'''
-        self.r_temp.sadd(self.out_set, msg)
+        self.r.hset('module_{}_{}'.format(self.module_name, os.getpid()), 'out', datetime.now().isoformat())
+        self.r.sadd(self.out_set, msg)
 
     def receive(self):
         '''Pop a messages from the temporary queue (multiprocess)'''
         # Update the size of the current waiting queue (for information purposes)
-        self.r_temp.hset('queues', self.module_name, self.count_queued_messages())
-        return self.r_temp.spop(self.in_set)
+        self.r.hset('queues', self.module_name, self.count_queued_messages())
+        self.r.hset('module_{}_{}'.format(self.module_name, os.getpid()), 'in', datetime.now().isoformat())
+        return self.r.spop(self.in_set)
 
     def count_queued_messages(self):
         '''Return the size of the current queue'''
-        return self.r_temp.scard(self.in_set)
+        return self.r.scard(self.in_set)
 
 
-class Process(object):
+class QueueManager(object):
+
+    class PubSub(object):
+
+        def __init__(self):
+            self.subscriber = None
+            self.publishers = []
+
+        def setup_subscribe(self, queue_name, queue_config):
+            r = redis.StrictRedis(host=queue_config['host'],
+                                  port=queue_config['port'],
+                                  db=queue_config['db'])
+            self.subscriber = r.pubsub(ignore_subscribe_messages=True)
+            self.subscriber.psubscribe(queue_name)
+
+        def subscribe(self):
+            for msg in self.subscriber.listen():
+                if msg.get('data'):
+                    yield msg['data']
+
+        def setup_publish(self, queue_name, queue_config):
+            r = redis.StrictRedis(host=queue_config['host'],
+                                  port=queue_config['port'],
+                                  db=queue_config['db'])
+            self.publishers.append((r, queue_name))
+
+        def publish(self, message):
+            for p, queue_name in self.publishers:
+                p.publish(queue_name, message)
 
     def __init__(self, pipeline, module_name, runtime):
         with open(runtime, 'r') as f:
@@ -84,7 +90,7 @@ class Process(object):
         with open(pipeline, 'r') as f:
             self.modules = json.load(f)
         self.module_name = module_name
-        self.pubsub = PubSub()
+        self.pubsub = self.PubSub()
         # Setup the intermediary redis connector that makes the queues multiprocessing-ready
         self.r_temp = redis.StrictRedis(host=self.runtime['Default']['host'],
                                         port=self.runtime['Default']['port'],

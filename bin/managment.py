@@ -27,7 +27,9 @@ class Manager():
         self.modules = {}
         self.default_redis = redis.StrictRedis(host=self.runtime['Default']['host'],
                                                port=self.runtime['Default']['port'],
-                                               db=self.runtime['Default']['db'])
+                                               db=self.runtime['Default']['db'],
+                                               decode_responses=True)
+        self.cleanup_mgmt()
 
     def _is_pid_running(self, pid):
         if pid is None or pid.poll() is not None:
@@ -94,16 +96,36 @@ class Manager():
         self.modules = {}
 
     def show_status(self):
-        table = texttable.Texttable()
-        table.header(["Queue name", "#Items"])
-        row = []
+        modules_sizes = texttable.Texttable()
+        modules_sizes.header(["Queue name", "#Items"])
+        rows = []
         for name, size in self.default_redis.hgetall("queues").items():
-            row.append((name.decode(), size))
-        row.sort()
-        table.add_rows(row, header=False)
-        os.system('clear')
-        print(table.draw())
+            rows.append((name, size))
+        rows.sort()
+        modules_sizes.add_rows(rows, header=False)
+        modules_status = texttable.Texttable()
+        modules_status.header(["Queue name", "Process ID", 'Last pop', 'Last push'])
+        rows = []
+        for m in self.default_redis.smembers('modules'):
+            for p in self.default_redis.smembers('module_{}'.format(m)):
+                details = self.default_redis.hgetall('module_{}_{}'.format(m, p))
+                rows.append([m, p, details['in'], details['out']])
+        rows.sort()
+        modules_status.add_rows(rows, header=False)
 
+        os.system('clear')
+        print(modules_sizes.draw())
+        print(modules_status.draw())
+
+    def cleanup_mgmt(self):
+        pipe = self.default_redis.pipeline(False)
+        for m in self.default_redis.smembers('modules'):
+            for p in self.default_redis.smembers('module_{}'.format(m)):
+                pipe.delete('module_{}_{}'.format(m, p))
+            pipe.delete('module_{}'.format(m))
+        pipe.delete('modules')
+        pipe.delete('queues')
+        pipe.execute()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Start and manage all queues.')

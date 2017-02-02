@@ -2,7 +2,7 @@
 import argparse
 import json
 
-from simplequeue import Pipeline
+from simplequeue import ModuleConnector
 
 
 if __name__ == '__main__':
@@ -16,7 +16,7 @@ if __name__ == '__main__':
 
     with open(args.runtime, 'r') as f:
         runtime = json.load(f)
-    pipeline = Pipeline(runtime, module_name)
+    pipeline = ModuleConnector(runtime, module_name)
 
     nb = 0
 

@@ -5,7 +5,7 @@ import argparse
 import signal
 import sys
 
-from simplequeue import Process
+from simplequeue import QueueManager
 
 
 def signal_term_handler(signal, frame):
@@ -13,7 +13,7 @@ def signal_term_handler(signal, frame):
 
 
 def run(pipeline, module, runtime):
-    p = Process(pipeline, module, runtime)
+    p = QueueManager(pipeline, module, runtime)
     p.populate_set_in()
 
 

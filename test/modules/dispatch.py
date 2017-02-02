@@ -2,12 +2,12 @@
 import argparse
 import json
 
-from simplequeue import Pipeline
+from simplequeue import ModuleConnector
 
 
 if __name__ == '__main__':
 
-    parser = argparse.ArgumentParser(description='Dispatch Queue.')
+    parser = argparse.ArgumentParser(description='Entry Queue.')
     parser.add_argument("-r", "--runtime", type=str, required=True, help="Path to the runtime configuration file.")
     parser.add_argument("-i", "--id", type=str, required=True, help="Module ID.")
     args = parser.parse_args()
@@ -16,7 +16,7 @@ if __name__ == '__main__':
 
     with open(args.runtime, 'r') as f:
         runtime = json.load(f)
-    pipeline = Pipeline(runtime, module_name)
+    pipeline = ModuleConnector(runtime, module_name)
 
     nb = 0
 
