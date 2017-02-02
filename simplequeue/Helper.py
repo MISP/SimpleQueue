@@ -124,8 +124,9 @@ class QueueManager(object):
                     self.r_temp.sadd(self.in_set, msg['content'])
                 else:
                     self.r_temp.zadd('{}_delayed'.format(self.in_set), msg.get('run_at'), json.dumps(msg))
+            else:
+                time.sleep(0.1)
             self.check_delayed()
-            time.sleep(0.001)
 
     def publish(self):
         '''Push all the messages processed by the module to the next queue (mono process)'''
