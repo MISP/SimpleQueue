@@ -107,7 +107,8 @@ class QueueManager(object):
         for value in self.r_temp.zrange('{}_delayed'.format(self.in_set), 0, now):
             if value:
                 msg = json.loads(value.decode())
-                self.r_temp.sadd(self.in_set, msg['content'])
+                msg.pop('run_at', None)
+                self.r_temp.sadd(self.in_set, json.dumps(msg))
         self.r_temp.zremrangebyscore('{}_delayed'.format(self.in_set), 0, now)
 
     def populate_set_in(self):
@@ -121,11 +122,11 @@ class QueueManager(object):
             msg = self.pubsub.subscribe()
             if msg:
                 if not msg.get('run_at'):
-                    self.r_temp.sadd(self.in_set, msg['content'])
+                    self.r_temp.sadd(self.in_set, json.dumps(msg))
                 else:
                     self.r_temp.zadd('{}_delayed'.format(self.in_set), msg.get('run_at'), json.dumps(msg))
             else:
-                time.sleep(0.1)
+                time.sleep(0.5)
             self.check_delayed()
 
     def publish(self):
