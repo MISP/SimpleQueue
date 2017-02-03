@@ -22,15 +22,16 @@ class ModuleConnector(object):
         self.log = Log(runtime, module_name, os.getpid())
         self.r = redis.StrictRedis(host=runtime['Default']['host'],
                                    port=runtime['Default']['port'],
-                                   db=runtime['Default']['db'])
+                                   db=runtime['Default']['db'],
+                                   decode_responses=True)
         self.module_name = module_name
         self.in_set = self.module_name + 'in'
         self.out_set = self.module_name + 'out'
         self.log.info('New {} for {} started.'.format(self.__class__.__name__, self.module_name))
         self.r.sadd('modules', self.module_name)
         self.r.sadd('module_{}'.format(self.module_name), os.getpid())
-        self.r.hmset('module_{}_{}'.format(self.module_name, os.getpid()),
-                     {'in': 0, 'out': 0, 'size_in': 0, 'size_out': 0})
+        self.mgmt_key = 'module_{}_{}'.format(self.module_name, os.getpid())
+        self.r.hmset(self.mgmt_key, {'uuid': None, 'in': 0, 'out': 0, 'size_in': 0, 'size_out': 0})
 
     def sleep(self, interval):
         """Requests the pipeline to sleep for the given interval"""
@@ -38,17 +39,26 @@ class ModuleConnector(object):
 
     def send(self, msg):
         '''Push a messages to the temporary exit queue (multiprocess)'''
-        self.r.sadd(self.out_set, msg)
-        self.r.hmset('module_{}_{}'.format(self.module_name, os.getpid()),
-                     {'out': datetime.now().isoformat(), 'size_out': self.r.scard(self.out_set)})
+        self.r.sadd(self.out_set, json.dumps(msg))
+        self.r.hmset(self.mgmt_key, {'uuid': None, 'out': datetime.now().isoformat(),
+                                     'size_out': self.r.scard(self.out_set),
+                                     'size_in': self.r.scard(self.in_set)})
 
     def receive(self):
         '''Pop a messages from the temporary queue (multiprocess)'''
+        data = self.r.spop(self.in_set)
+        # The UUID is removed in the send function, if called. If the module has no output,
+        # it will never be removed if it isn't done manually in the module itself
+        self.r.hmset(self.mgmt_key, {'in': datetime.now().isoformat(),
+                                     'size_in': self.r.scard(self.in_set),
+                                     'size_out': self.r.scard(self.out_set),
+                                     'uuid': None})
+        if not data:
+            return None
+        message = json.loads(data)
         # Update the size of the current waiting queue (for information purposes)
-        self.r.hmset('module_{}_{}'.format(self.module_name, os.getpid()),
-                     {'in': datetime.now().isoformat(), 'size_in': self.r.scard(self.in_set),
-                      'size_out': self.r.scard(self.out_set)})
-        return self.r.spop(self.in_set)
+        self.r.hset(self.mgmt_key, 'uuid', message['uuid'])
+        return message
 
 
 class QueueManager(object):
@@ -62,7 +72,8 @@ class QueueManager(object):
         def setup_subscribe(self, queue_name, queue_config):
             r = redis.StrictRedis(host=queue_config['host'],
                                   port=queue_config['port'],
-                                  db=queue_config['db'])
+                                  db=queue_config['db'],
+                                  decode_responses=True)
             self.subscriber = r.pubsub(ignore_subscribe_messages=True)
             self.subscriber.psubscribe(queue_name)
 
@@ -71,12 +82,13 @@ class QueueManager(object):
             if not msg:
                 return None
             if msg.get('data'):
-                return json.loads(msg['data'].decode())
+                return json.loads(msg['data'])
 
         def setup_publish(self, queue_name, queue_config):
             r = redis.StrictRedis(host=queue_config['host'],
                                   port=queue_config['port'],
-                                  db=queue_config['db'])
+                                  db=queue_config['db'],
+                                  decode_responses=True)
             self.publishers.append((r, queue_name))
 
         def publish(self, message):
@@ -95,7 +107,8 @@ class QueueManager(object):
         # Setup the intermediary redis connector that makes the queues multiprocessing-ready
         self.r_temp = redis.StrictRedis(host=self.runtime['Default']['host'],
                                         port=self.runtime['Default']['port'],
-                                        db=self.runtime['Default']['db'])
+                                        db=self.runtime['Default']['db'],
+                                        decode_responses=True)
         self.in_set = self.module_name + 'in'
         self.out_set = self.module_name + 'out'
         self.source = self.modules[self.module_name].get('source-queue')
@@ -106,7 +119,7 @@ class QueueManager(object):
         now = int(time.time())
         for value in self.r_temp.zrange('{}_delayed'.format(self.in_set), 0, now):
             if value:
-                msg = json.loads(value.decode())
+                msg = json.loads(value)
                 msg.pop('run_at', None)
                 self.r_temp.sadd(self.in_set, json.dumps(msg))
         self.r_temp.zremrangebyscore('{}_delayed'.format(self.in_set), 0, now)

@@ -24,7 +24,7 @@ if __name__ == '__main__':
         message = pipeline.receive()
         if message is not None:
             pipeline.log.debug(module_name + ': Got a message')
-            pipeline.send(json.dumps({'content': message.decode()}))
+            pipeline.send(message)
             nb += 1
             if nb % 100 == 0:
                 pipeline.log.info('{} ({}): {} messages processed.'.format(

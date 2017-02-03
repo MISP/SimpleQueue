@@ -5,6 +5,7 @@ import redis
 import time
 import json
 import random
+import uuid
 
 nb = 0
 
@@ -21,7 +22,10 @@ r = redis.StrictRedis(host=runtime['Default']['host'],
 
 while True:
     message = time.time()
-    r.publish(pipeline['Entry']['source-queue'], json.dumps({'run_at': message + random.randint(0, 20), 'content': message}))
+    r.publish(pipeline['Entry']['source-queue'],
+              json.dumps({'uuid': str(uuid.uuid4()),
+                          'run_at': message + random.randint(0, 20),
+                          'content': message}))
     nb += 1
     if nb % 1000 == 0:
         print(nb)

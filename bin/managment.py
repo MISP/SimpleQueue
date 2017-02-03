@@ -8,6 +8,7 @@ import argparse
 import os
 import redis
 import time
+from datetime import datetime
 
 try:
     from terminaltables import AsciiTable
@@ -102,14 +103,67 @@ class Manager():
 
     def update_status(self):
         status = {}
+        status_queues = {}
         for m in self.default_redis.smembers('modules'):
             status[m] = {}
             for p in self.default_redis.smembers('module_{}'.format(m)):
                 details = self.default_redis.hgetall('module_{}_{}'.format(m, p))
                 status[m][p] = {'last_pop': details['in'], 'size_in': details['size_in'],
                                 'last_push': details['out'], 'size_out': details['size_out'],
-                                'delayed': self.default_redis.zcard('{}in_delayed'.format(m))}
+                                'delayed': self.default_redis.zcard('{}in_delayed'.format(m)),
+                                'processing': details['uuid']}
+            # Intermediate queues
+            status_queues['{}in'.format(m)] = []
+            status_queues['{}out'.format(m)] = []
+            status_queues['{}in_delayed'.format(m)] = []
+            inqueue = self.default_redis.sscan('{}in'.format(m), count=3)[1]
+            delayed_queue = self.default_redis.zscan('{}in_delayed'.format(m), count=7)[1]
+            outqueue = self.default_redis.sscan('{}out'.format(m), count=3)[1]
+            if inqueue:
+                for iq in inqueue:
+                    job = json.loads(iq)
+                    status_queues['{}in'.format(m)].append(job['uuid'])
+            if delayed_queue:
+                for dq in delayed_queue:
+                    job = json.loads(dq[0])
+                    status_queues['{}in_delayed'.format(m)].append([job['uuid'], datetime.fromtimestamp(dq[1]).isoformat()])
+            if outqueue:
+                for oq in outqueue:
+                    job = json.loads(oq)
+                    status_queues['{}out'.format(m)].append(job['uuid'])
         self.default_redis.set('status', json.dumps(status), ex=600)
+        self.default_redis.set('status_queues', json.dumps(status_queues), ex=600)
+
+    def show_status_queues(self):
+        if not HAS_TAB:
+            os.system('clear')
+            print('terminaltables no installed, running headless.')
+            return
+        if not self.default_redis.exists('status'):
+            os.system('clear')
+            print('No status key available, nothing to display.')
+            return
+        status_queues = json.loads(self.default_redis.get('status_queues'))
+        for m in self.default_redis.smembers('modules'):
+            if status_queues['{}in_delayed'.format(m)]:
+                table_delayed = [['{}in_delayed'.format(m), 'Until']]
+                if status_queues.get('{}in_delayed'.format(m)):
+                    for l in status_queues['{}in_delayed'.format(m)]:
+                        table_delayed.append(l)
+                table_delayed = AsciiTable(table_delayed)
+                print(table_delayed.table)
+            if status_queues['{}in'.format(m)]:
+                table_in = [['{}in'.format(m)]]
+                for l in status_queues['{}in'.format(m)]:
+                    table_in.append([l])
+                table_in = AsciiTable(table_in)
+                print(table_in.table)
+            if status_queues['{}out'.format(m)]:
+                table_out = [['{}out'.format(m)]]
+                for l in status_queues['{}out'.format(m)]:
+                    table_out.append([l])
+                table_out = AsciiTable(table_out)
+                print(table_out.table)
 
     def show_status(self):
         if not HAS_TAB:
@@ -122,15 +176,14 @@ class Manager():
             return
         status = json.loads(self.default_redis.get('status'))
 
-        table = [["Queue name", "Delayed", "Process ID", 'Last pop', 'Input Size', 'Last push', 'Output Size']]
+        table = [["Queue name", "Delayed", "Process ID", 'Processing', 'Last pop', 'Input Size', 'Last push', 'Output Size']]
         rows = []
         for m, d in status.items():
             for p, values in d.items():
-                rows.append([m, values['delayed'], p, values['last_pop'], values['size_in'], values['last_push'], values['size_out']])
+                rows.append([m, values['delayed'], p, values.get('processing'), values['last_pop'], values['size_in'], values['last_push'], values['size_out']])
         rows.sort()
         table += rows
         table = AsciiTable(table)
-        os.system('clear')
         print(table.table)
 
     def cleanup_mgmt(self):
@@ -158,7 +211,9 @@ if __name__ == '__main__':
             m.update_running_modules()
             m.update_status()
             if not args.quiet or not HAS_TAB:
+                os.system('clear')
                 m.show_status()
+                m.show_status_queues()
             time.sleep(1)
     except KeyboardInterrupt:
         m.stop_queues()
