@@ -185,20 +185,20 @@ class Manager():
             return
         status_queues = json.loads(self.default_redis.get('status_queues'))
         for m in self.default_redis.smembers('modules'):
-            if status_queues['{}in_delayed'.format(m)]:
+            if status_queues.get('{}in_delayed'.format(m)):
                 table_delayed = [['{}in_delayed'.format(m), 'Until']]
                 if status_queues.get('{}in_delayed'.format(m)):
                     for l in status_queues['{}in_delayed'.format(m)]:
                         table_delayed.append(l)
                 table_delayed = AsciiTable(table_delayed)
                 print(table_delayed.table)
-            if status_queues['{}in'.format(m)]:
+            if status_queues.get('{}in'.format(m)):
                 table_in = [['{}in'.format(m)]]
                 for l in status_queues['{}in'.format(m)]:
                     table_in.append([l])
                 table_in = AsciiTable(table_in)
                 print(table_in.table)
-            if status_queues['{}out'.format(m)]:
+            if status_queues.get('{}out'.format(m)):
                 table_out = [['{}out'.format(m)]]
                 for l in status_queues['{}out'.format(m)]:
                     table_out.append([l])
