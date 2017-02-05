@@ -27,9 +27,9 @@ while True:
                           'run_at': message + random.randint(0, 20),
                           'content': message}))
     nb += 1
-    if nb % 1000 == 0:
+    if nb % 100 == 0:
         print(nb)
 
-    if nb % 10000 == 0:
+    if nb % 1000 == 0:
         print('Done.')
         break

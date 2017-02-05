@@ -9,6 +9,7 @@ import os
 import redis
 import time
 from datetime import datetime
+import uuid
 
 try:
     from terminaltables import AsciiTable
@@ -30,7 +31,6 @@ class Manager():
             self.startup_path = startup_path
             self.startup = json.load(f)
         self.queues = {}
-        self.modules = {}
         self.default_redis = redis.StrictRedis(host=self.runtime['Default']['host'],
                                                port=self.runtime['Default']['port'],
                                                db=self.runtime['Default']['db'],
@@ -38,15 +38,18 @@ class Manager():
         self.cleanup_mgmt()
 
     def _is_pid_running(self, pid):
-        if pid is None or pid.poll() is not None:
+        try:
+            os.kill(int(pid), 0)
+        except OSError:
             return False
-        return True
+        else:
+            return True
 
     def launch_queues(self):
         for module in self.pipeline.keys():
             pin = subprocess.Popen(['QueueIn.py', '-p', self.pipeline_path, '-m', module, '-r', self.runtime_path])
             pout = subprocess.Popen(['QueueOut.py', '-p', self.pipeline_path, '-m', module, '-r', self.runtime_path])
-            self.queues[module] = (pin, pout)
+            self.queues[module] = (pin.pid, pout.pid)
 
     def update_running_queues(self):
         if not self.queues:
@@ -67,51 +70,89 @@ class Manager():
             return
         for pin, pout in self.queues.values():
             if pin:
-                pin.kill()
+                os.kill(pin, 9)
             if pout:
-                pout.kill()
+                os.kill(pout, 9)
         self.queues = {}
 
+    def get_module_status(self, module):
+        nb_processes = self.default_redis.hget('config_{}'.format(module), 'nb_processes')
+        pids = self.default_redis.smembers('pids_{}'.format(module))
+        return int(nb_processes), [int(p) for p in pids]
+
     def launch_modules(self):
+        p = self.default_redis.pipeline(False)
         for module in self.startup.keys():
             nb_processes = self.startup[module].get('processes')
             if not nb_processes:
                 nb_processes = 1
-            self.modules[module] = []
+            p.sadd('running_modules', module)
+            p.hset('config_{}'.format(module), 'nb_processes', nb_processes)
+            pids = []
             for i in range(nb_processes):
-                cmd = "python -m {} -r {} -i {}_{}".format(self.startup[module]['module'], self.runtime_path, module, i)
-                args = shlex.split(cmd)
-                pid = subprocess.Popen(args)
-                self.modules[module].append(pid)
+                pid = self._start_process(module)
+                pids.append(pid)
+            p.sadd('pids_{}'.format(module), *pids)
+        p.execute()
+
+    def _start_process(self, module):
+        cmd = "python -m {} -r {} -i {}_{}".format(self.startup[module]['module'],
+                                                   self.runtime_path, module, uuid.uuid4())
+        args = shlex.split(cmd)
+        return subprocess.Popen(args).pid
 
     def update_running_modules(self):
-        if not self.modules:
+        if not self.default_redis.exists('running_modules'):
             return
-        cur_modules = {}
-        for module, ps in self.modules.items():
-            cur_pids = [p for p in ps if self._is_pid_running(p)]
-            if cur_pids:
-                cur_modules[module] = cur_pids
-        self.modules = cur_modules
+        # Clean zombies
+        os.waitpid(-1, os.WNOHANG)
+        pipe = self.default_redis.pipeline()
+        for module in self.default_redis.smembers('running_modules'):
+            expected_processes, running_processes = self.get_module_status(module)
+            cur_pids = []
+            for p in running_processes:
+                if self._is_pid_running(p):
+                    cur_pids.append(p)
+            to_start = expected_processes - len(cur_pids)
+            if to_start > 0:
+                for i in range(to_start):
+                    pid = self._start_process(module)
+                    cur_pids.append(pid)
+            pipe.delete('pids_{}'.format(module))
+            pipe.sadd('pids_{}'.format(module), *cur_pids)
+        pipe.execute()
 
     def stop_modules(self):
-        if not self.modules:
+        if not self.default_redis.exists('running_modules'):
             return
-        for ps in self.modules.values():
-            [p.kill() for p in ps if p]
-        self.modules = {}
+        pipe = self.default_redis.pipeline()
+        for module in self.default_redis.smembers('running_modules'):
+            expected_processes, running_processes = self.get_module_status(module)
+            [os.kill(p, 9) for p in running_processes if p]
+            pipe.delete('config_{}'.format(module))
+            pipe.delete('pids_{}'.format(module))
+        pipe.delete('running_modules')
+        pipe.execute()
 
     def update_status(self):
         status = {}
-        status_queues = {}
         for m in self.default_redis.smembers('modules'):
             status[m] = {}
             for p in self.default_redis.smembers('module_{}'.format(m)):
+                if not self._is_pid_running(p):
+                    self.default_redis.delete('module_{}_{}'.format(m, p))
+                    self.default_redis.srem('module_{}'.format(m), p)
+                    continue
                 details = self.default_redis.hgetall('module_{}_{}'.format(m, p))
                 status[m][p] = {'last_pop': details['in'], 'size_in': details['size_in'],
                                 'last_push': details['out'], 'size_out': details['size_out'],
                                 'delayed': self.default_redis.zcard('{}in_delayed'.format(m)),
                                 'processing': details['uuid']}
+        self.default_redis.set('status', json.dumps(status), ex=600)
+
+    def update_status_queues(self):
+        status_queues = {}
+        for m in self.default_redis.smembers('modules'):
             # Intermediate queues
             status_queues['{}in'.format(m)] = []
             status_queues['{}out'.format(m)] = []
@@ -131,7 +172,6 @@ class Manager():
                 for oq in outqueue:
                     job = json.loads(oq)
                     status_queues['{}out'.format(m)].append(job['uuid'])
-        self.default_redis.set('status', json.dumps(status), ex=600)
         self.default_redis.set('status_queues', json.dumps(status_queues), ex=600)
 
     def show_status_queues(self):
@@ -192,7 +232,11 @@ class Manager():
             for p in self.default_redis.smembers('module_{}'.format(m)):
                 pipe.delete('module_{}_{}'.format(m, p))
             pipe.delete('module_{}'.format(m))
+            pipe.delete('pids_{}'.format(m))
+            pipe.delete('config_{}'.format(m))
         pipe.delete('modules')
+        pipe.delete('status')
+        pipe.delete('status_queues')
         pipe.execute()
 
 if __name__ == '__main__':
@@ -206,10 +250,11 @@ if __name__ == '__main__':
     m.launch_queues()
     m.launch_modules()
     try:
-        while m.modules or m.queues:
+        while m.queues:
             m.update_running_queues()
             m.update_running_modules()
             m.update_status()
+            m.update_status_queues()
             if not args.quiet or not HAS_TAB:
                 os.system('clear')
                 m.show_status()
